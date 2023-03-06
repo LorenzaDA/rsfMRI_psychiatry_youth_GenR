@@ -1,0 +1,246 @@
+---
+title: "3.AnalysesbySex"
+author: "Lorenza Dall'Aglio"
+date: "4/25/2022"
+output: html_document
+---
+
+```{r}
+
+#####
+# Set environment
+####
+
+rm(list=ls())
+
+source("/PUT/RELEVANT/PATH/0.Source_file.R")
+
+# load data 
+
+dd <- readRDS(paste0(indata, "genr_data_main_rsfMRI_psych.rds"))
+
+summary(dd) 
+
+tab <- "/PUT/RELEVANT/PATH/"
+
+```
+
+```{r}
+
+####
+# factor scaling 
+####
+# this is needed so that the variables are more or less on the same order of magnitude
+# FA/MD values are generally 100 times smaller than behavioural ones. --> use scale factor of 100 
+
+scale_factor = 100
+
+
+mdts <- grep("mdt", names(dd), value = T)
+
+dd[mdts] <- dd[mdts] / scale_factor
+
+
+####
+# Recoding of vars for lavaan
+####
+# Before running lavaan, variables need to be coded in a certain way if they are not continuous
+# this varies depending on whether the var is exogeneous (ind) or endogeneous (dep)
+# more info at https://lavaan.ugent.be/tutorial/cat.html
+
+
+### Make ordered variables, continuous/numeric ###
+# maternal education only here
+
+dd$mat_edu_num <- as.numeric(dd$mat_edu)
+
+
+### dummy coding for binary/nominal variables ### 
+# to make dummy cols from factors or character vars you can use dummy_cols()
+# NB check which vars have factors or chr 
+# id is chr - change it just temporarily so it is not transformed into a dummy 
+# only nominal vars here are ethnicity and sex
+
+rownames(dd) <- dd$id
+dd$id <- NULL
+
+dd2 <- fastDummies::dummy_cols(dd)   
+# NB the function dichotomises everything w/o setting ref cateogory so you need to take care of that
+
+
+# delete reference vars 
+# and dummies with NAs 
+
+dd2$ethn_dutch <- NULL
+dd2$ethn_NA <- NULL
+
+dd2$sex_girl <- NULL
+```
+
+
+```{r}
+
+######
+# Model specification
+######
+
+m_int  <- '
+
+# lagged and stability 
+int_t2 + var_t2 ~ int_t1 + var_t1
+
+# covariances
+int_t1 ~~ var_t1
+int_t2 ~~ var_t2
+
+# autocorr
+int_t1 ~~ int_t1
+var_t1 ~~ var_t1
+int_t2 ~~ int_t2
+var_t2 ~~ var_t2
+
+# covs
+int_t2 ~ ethn_other + ethn_european + mat_edu_num
+
+var_t2 ~ puberty + agediff_t2 + agemri_t2
+
+var_t1 ~ agediff_t1 + agemri_t1
+
+'
+
+
+
+m_ext <- '
+# lagged and stability 
+ext_t2 + var_t2 ~ ext_t1 + var_t1
+
+# covariances
+ext_t1 ~~ var_t1
+ext_t2 ~~ var_t2
+
+# autocorr
+ext_t1 ~~ ext_t1
+var_t1 ~~ var_t1
+ext_t2 ~~ ext_t2
+var_t2 ~~ var_t2
+
+# covs
+ext_t2 ~ ethn_other + ethn_european + mat_edu_num
+
+var_t2 ~ puberty + agediff_t2 + agemri_t2
+
+var_t1 ~ agediff_t1 + agemri_t1
+
+'
+
+
+# create empty lists where to put the model specifications for each measure
+# From the general model specifications, we create specific model specifications for each
+# syndrome scale. The "var" within the specification will be substituted with each rsfMRI measure
+
+specifications_int <- list()
+specifications_ext <- list()
+
+# create vector for the substitution of the var specifications into syndrome scale names 
+
+names <- c("mdt1_", "mdt2_", "mdt3_", "mdt4_", "mdt5_", "nt_")
+
+
+# loop to create the various model specifications per syndrome scale 
+
+for (i in names){
+  specifications_int[i] <- gsub("var_", i, m_int) # gsub changes the "var_" string into every element of names in the m_fa specification
+  specifications_ext[i] <- gsub("var_", i, m_ext) # as above, but for md specifications
+}
+
+
+names(specifications_int) <- paste0(names(specifications_int), "int")
+names(specifications_ext) <- paste0(names(specifications_ext), "ext")
+
+
+# put all model specifications together
+
+specifications <- append(specifications_int, specifications_ext)
+
+```
+
+
+# Model identification
+
+```{r}
+
+
+####
+# Model identification 
+####
+# model identification 
+# identify the model
+# fixed.x = F because we want to estimate the covariances too to then estimate the lagged (as specified above in the model) 
+# fixed.x = T if we want for these to be fixed to the observed values. 
+# we are trying both to see which one is giving us a better fit. do not pick according to outcomes but to fit. 
+
+# group by sex
+
+fits_all <- sapply(specifications, function(x) sem(x, data = dd2, missing = "fiml", fixed.x = F, group = "sex"))
+
+# group by sex setting the coefficients as equal 
+
+fits_all_reg <- sapply(specifications, function(x) sem(x, data = dd2, missing = "fiml", fixed.x = F, group = "sex", group.equal = "regressions"))
+
+
+comp1 <- lavTestLRT(fits_all$mdt1_int, fits_all_reg$mdt1_int)
+comp2 <- lavTestLRT(fits_all$mdt2_int, fits_all_reg$mdt2_int)
+comp3 <- lavTestLRT(fits_all$mdt3_int, fits_all_reg$mdt3_int)
+comp4 <- lavTestLRT(fits_all$mdt4_int, fits_all_reg$mdt4_int)
+comp5 <- lavTestLRT(fits_all$mdt5_int, fits_all_reg$mdt5_int)
+comp6 <- lavTestLRT(fits_all$nt_int, fits_all_reg$nt_int)
+
+
+comp7 <- lavTestLRT(fits_all$mdt1_ext, fits_all_reg$mdt1_ext)
+comp8 <- lavTestLRT(fits_all$mdt2_ext, fits_all_reg$mdt2_ext)
+comp9 <- lavTestLRT(fits_all$mdt3_ext, fits_all_reg$mdt3_ext)
+comp10 <- lavTestLRT(fits_all$mdt4_ext, fits_all_reg$mdt4_ext)
+comp11 <- lavTestLRT(fits_all$mdt5_ext, fits_all_reg$mdt5_ext)
+comp12 <- lavTestLRT(fits_all$nt_ext, fits_all_reg$nt_ext)
+
+
+comparison_tab <- rbind(comp1, comp2, comp3, comp4, comp5, comp6, comp7,
+                        comp8, comp9, comp10, comp11, comp12)
+
+comparison_tab
+
+
+# no differences for any
+
+```
+
+# output table 
+
+```{r}
+
+# round to 3 decimals
+
+comparison_tab <- round(comparison_tab, digits = 3)
+
+# rename for clarity
+
+rownames(comparison_tab) <- gsub("mdt1", "MDT state 1", 
+                            gsub("mdt2", "MDT state 2",
+                                 gsub("mdt3", "MDT state 3", 
+                                      gsub("mdt4", "MDT state 4",
+                                           gsub("mdt5", "MDT state 5",
+                                                gsub("nt ", "NT ",
+                                           gsub("int", "Internalizing problems",
+                                                gsub("ext", "Externalizing problems", 
+                                                      gsub("fits_all", "fit ", 
+                                                                   gsub("\\$", " ", 
+                                                                    gsub("reg", "(equal estimates) ",
+                                                     gsub("_", " ", 
+                                                               rownames(comparison_tab)))))))))))))
+
+# save table
+
+write.csv(comparison_tab, paste0(tab, "comparison_across_sexes.csv"))
+
+```
+

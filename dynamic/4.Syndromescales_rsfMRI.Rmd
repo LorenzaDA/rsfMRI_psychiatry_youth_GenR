@@ -1,0 +1,378 @@
+---
+title: "4.Syndrome_scales_rsfmri"
+author: "Lorenza Dall'Aglio"
+date: "2/22/2022"
+output: html_document
+---
+
+# Cross-lagged panel models rsfMRI - psychiatric problems
+
+*Project* rsfmri - psychiatric problems
+*Author* Lorenza Dall'Aglio (l.dallaglio@erasmusmc.nl; lorenza.dallaglio1@gmail.com)
+*Dataset* the Generation R Study
+*Date* 22 Feb 2022
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+## Data prep
+
+```{r}
+
+rm(list=ls())
+
+# load env 
+
+source("/PUT/RELEVANT/PATH/0.Source_file.R")
+
+# load data 
+
+dd <- readRDS(paste0(indata, "genr_data_main_rsfMRI_psych.rds"))
+
+summary(dd)
+
+tab <- "/PUT/RELEVANT/PATH/"
+
+```
+
+```{r}
+
+####
+# factor scaling 
+####
+# this is needed so that the variables are more or less on the same order of magnitude
+# FA/MD values are generally 100 times smaller than behavioural ones. --> use scale factor of 100 
+
+scale_factor = 100
+
+
+mdts <- grep("mdt", names(dd), value = T)
+
+dd[mdts] <- dd[mdts] / scale_factor
+
+
+
+####
+# Recoding of vars for lavaan
+####
+# Before running lavaan, variables need to be coded in a certain way if they are not continuous
+# this varies depending on whether the var is exogeneous (ind) or endogeneous (dep)
+# more info at https://lavaan.ugent.be/tutorial/cat.html
+
+
+### Make ordered variables, continuous/numeric ###
+# maternal education only here
+
+dd$mat_edu_num <- as.numeric(dd$mat_edu)
+
+
+
+### dummy coding for binary/nominal variables ### 
+# to make dummy cols from factors or character vars you can use dummy_cols()
+# NB check which vars have factors or chr 
+# id is chr - change it just temporarily so it is not transformed into a dummy 
+# only nominal vars here are ethnicity and sex
+
+rownames(dd) <- dd$id
+dd$id <- NULL
+
+dd2 <- fastDummies::dummy_cols(dd)   
+# NB the function dichotomises everything w/o setting ref cateogory so you need to take care of that
+
+
+# delete reference vars 
+# and dummies with NAs 
+
+dd2$ethn_dutch <- NULL
+dd2$ethn_NA <- NULL
+dd2$sex_girl <- NULL
+```
+
+
+## Model specification 
+We need to test the relation of each MDT and of NT with each syndrome scale
+
+Because we have 5 MDT states + a var for NT, we have a total of 6 rsfMRI measures to be tested with the 8 syndrome scales
+
+For a total of 48 models and 96 lagged paths of interest 
+
+
+### general model specification 
+
+Because of the many models, I created general model specifications (one for int, one for ext)  so that
+the model specifications can then be adapted to each syndrome
+The object `phen` is where the syndrome scale measures will go 
+The object `state` is where the resting state measures will go 
+
+```{r}
+
+# general model 
+
+m_general  <- '
+
+# lagged and stability 
+phen_t2 + state_t2 ~ phen_t1 + state_t1
+
+# covariances
+phen_t1 ~~ state_t1
+phen_t2 ~~ state_t2
+
+# autocorr
+phen_t1 ~~ phen_t1
+state_t1 ~~ state_t1
+phen_t2 ~~ phen_t2
+state_t2 ~~ state_t2
+
+# covs
+phen_t2 ~ sex_boy + ethn_other + ethn_european + mat_edu_num
+
+state_t2 ~ puberty + agediff_t2 + agemri_t2
+
+state_t1 ~ agediff_t1 + agemri_t1
+
+'
+
+m_mdt1 <- gsub("state", "mdt1", m_general)
+m_mdt2 <- gsub("state", "mdt2", m_general)
+m_mdt3 <- gsub("state", "mdt3", m_general)
+m_mdt4 <- gsub("state", "mdt4", m_general)
+m_mdt5 <- gsub("state", "mdt5", m_general)
+m_nt <- gsub("state", "nt", m_general)
+
+```
+
+
+### Specific model specifications 
+
+each state and NT in association with each syndrome scale
+
+```{r}
+
+# create empty lists where to put the model specifications for each measure
+# From the general model specifications, we create specific model specifications for each
+# syndrome scale. The "var" within the specification will be substituted with each rsfMRI measure
+
+specifications_mdt1 <- list()
+specifications_mdt2 <- list()
+specifications_mdt3 <- list()
+specifications_mdt4 <- list()
+specifications_mdt5 <- list()
+specifications_nt <- list()
+
+
+
+# create vector for the substitution of the var specifications into syndrome scale names 
+
+names <- c("anxdep_", "withdep_", "somatic_", "social_", "thought_", "att_", "agg_", "rulebr_")
+
+
+# loop to create the various model specifications per syndrome scale 
+
+for (i in names){
+  specifications_mdt1[i] <- gsub("phen_", i, m_mdt1) # gsub changes the "var_" string into every element of names in the m_fa specification
+  specifications_mdt2[i] <- gsub("phen_", i, m_mdt2)
+  specifications_mdt3[i] <- gsub("phen_", i, m_mdt3)
+  specifications_mdt4[i] <- gsub("phen_", i, m_mdt4)
+  specifications_mdt5[i] <- gsub("phen_", i, m_mdt5)
+  specifications_nt[i] <- gsub("phen_", i, m_nt)
+}
+
+
+names(specifications_mdt1) <- paste0(names(specifications_mdt1), "mdt1")
+names(specifications_mdt2) <- paste0(names(specifications_mdt2), "mdt2")
+names(specifications_mdt3) <- paste0(names(specifications_mdt3), "mdt3")
+names(specifications_mdt4) <- paste0(names(specifications_mdt4), "mdt4")
+names(specifications_mdt5) <- paste0(names(specifications_mdt5), "mdt5")
+names(specifications_nt) <- paste0(names(specifications_nt), "nt")
+
+specifications <- c(specifications_mdt1, specifications_mdt2, specifications_mdt3, specifications_mdt4, specifications_mdt5, specifications_nt) # list of 48 as expected
+
+
+```
+
+### Model evaluation - fit 
+
+```{r}
+
+# fit all models
+
+fits_all <- sapply(specifications, function(x) sem(x, data = dd2, missing = "fiml", fixed.x = F))
+
+
+# get all model fit measures that you are interested in 
+
+table_fits <- sapply(fits_all, function(x) fitMeasures(x, c("cfi", "tli", "rmsea", "srmr")))
+
+table_fits <- as.data.frame(t(table_fits)) # for saving, transform into dataframe format after transposing (so fit indices are the cols and models the rows)
+
+
+table_fits$model <- rownames(table_fits) # create new col with the model name 
+
+table_fits <- table_fits[, c(5, 3, 4, 1, 2)] # change order of cols
+
+
+table_fits$model <- NULL # for rounding we need to have all vars as numeric
+
+table_fits <- round(table_fits, digits = 3) # round to 3 decimals
+
+# rename 
+
+rownames(table_fits) <- gsub("mdt1", "MDT state 1", 
+                            gsub("mdt2", "MDT state 2",
+                                 gsub("mdt3", "MDT state 3", 
+                                      gsub("mdt4", "MDT state 4",
+                                           gsub("mdt5", "MDT state 5",
+                                                gsub("- nt", "- NT",
+                                                  gsub("anxdep", "Anxious/Depressed",
+                                                    gsub("withdep", "Withdrawn/Depressed", 
+                                                      gsub("somatic", "Somatic complaints",
+                                                           gsub("social", "Social problems",
+                                                                gsub("thought", "Thought problems",
+                                                                     gsub("att", "Attention problems",
+                                                                          gsub("agg", "Aggressive behaviors", 
+                                                                               gsub("rulebr", "Rule-breaking behaviors",
+                                                     gsub("_", " - ", 
+                                                               rownames(table_fits))))))))))))))))
+
+
+
+
+
+
+write.csv(table_fits, paste0(tab, "model_fits_syndromes.csv"))
+
+```
+all model fits are good as based on absolute model fit indices 
+
+
+### Output table
+
+Since the fit is good, we can extract the estimates now. 
+
+This part allows us to create a table with all results, that can be used in-text
+```{r}
+
+########
+# Get estimates 
+########
+
+# get standardised estimates 
+
+output_std <- lapply(fits_all, function(x) standardizedSolution(x)) # get std estimates, ci and p vals info 
+
+output_std2 <- as.data.frame(output_std) # change format for saving 
+
+output_std3 <- output_std2[2:3, ] # get the lagged coefficients
+
+
+#### create output table for in-text ####
+
+output_std3$FDR <- as.numeric("NA")
+
+names(output_std3)
+
+output_table <- data.frame(model = 1:96, 
+                           lhs = "NA",
+                           op = "NA", 
+                           rhs = "NA", 
+                           est.std = as.numeric("NA"),
+                           se = as.numeric("NA"), 
+                           pvalue = as.numeric("NA"), 
+                           fdr = as.numeric("NA"))
+
+
+
+cols <- paste0("output_std3$", names(output_std3))
+
+cols_p <- grep(".pvalue", cols, value = T)
+
+cols_p <- paste(cols_p, collapse = ", ")
+
+output_table$pvalue <- c(output_std3$anxdep_mdt1.pvalue, output_std3$withdep_mdt1.pvalue, output_std3$somatic_mdt1.pvalue, output_std3$social_mdt1.pvalue, output_std3$thought_mdt1.pvalue, output_std3$att_mdt1.pvalue, output_std3$agg_mdt1.pvalue, output_std3$rulebr_mdt1.pvalue, output_std3$anxdep_mdt2.pvalue, output_std3$withdep_mdt2.pvalue, output_std3$somatic_mdt2.pvalue, output_std3$social_mdt2.pvalue, output_std3$thought_mdt2.pvalue, output_std3$att_mdt2.pvalue, output_std3$agg_mdt2.pvalue, output_std3$rulebr_mdt2.pvalue, output_std3$anxdep_mdt3.pvalue, output_std3$withdep_mdt3.pvalue, output_std3$somatic_mdt3.pvalue, output_std3$social_mdt3.pvalue, output_std3$thought_mdt3.pvalue, output_std3$att_mdt3.pvalue, output_std3$agg_mdt3.pvalue, output_std3$rulebr_mdt3.pvalue, output_std3$anxdep_mdt4.pvalue, output_std3$withdep_mdt4.pvalue, output_std3$somatic_mdt4.pvalue, output_std3$social_mdt4.pvalue, output_std3$thought_mdt4.pvalue, output_std3$att_mdt4.pvalue, output_std3$agg_mdt4.pvalue, output_std3$rulebr_mdt4.pvalue, output_std3$anxdep_mdt5.pvalue, output_std3$withdep_mdt5.pvalue, output_std3$somatic_mdt5.pvalue, output_std3$social_mdt5.pvalue, output_std3$thought_mdt5.pvalue, output_std3$att_mdt5.pvalue, output_std3$agg_mdt5.pvalue, output_std3$rulebr_mdt5.pvalue, output_std3$anxdep_nt.pvalue, output_std3$withdep_nt.pvalue, output_std3$somatic_nt.pvalue, output_std3$social_nt.pvalue, output_std3$thought_nt.pvalue, output_std3$att_nt.pvalue, output_std3$agg_nt.pvalue, output_std3$rulebr_nt.pvalue) # length is 96 as expected 
+
+pvals_adj <- p.adjust(output_table$pvalue, method = "fdr") 
+
+output_table$fdr <- pvals_adj
+
+
+
+cols_lhs <- gsub(".pvalue", ".lhs", cols_p)
+
+
+output_table$lhs <- c(output_std3$anxdep_mdt1.lhs, output_std3$withdep_mdt1.lhs, output_std3$somatic_mdt1.lhs, output_std3$social_mdt1.lhs, output_std3$thought_mdt1.lhs, output_std3$att_mdt1.lhs, output_std3$agg_mdt1.lhs, output_std3$rulebr_mdt1.lhs, output_std3$anxdep_mdt2.lhs, output_std3$withdep_mdt2.lhs, output_std3$somatic_mdt2.lhs, output_std3$social_mdt2.lhs, output_std3$thought_mdt2.lhs, output_std3$att_mdt2.lhs, output_std3$agg_mdt2.lhs, output_std3$rulebr_mdt2.lhs, output_std3$anxdep_mdt3.lhs, output_std3$withdep_mdt3.lhs, output_std3$somatic_mdt3.lhs, output_std3$social_mdt3.lhs, output_std3$thought_mdt3.lhs, output_std3$att_mdt3.lhs, output_std3$agg_mdt3.lhs, output_std3$rulebr_mdt3.lhs, output_std3$anxdep_mdt4.lhs, output_std3$withdep_mdt4.lhs, output_std3$somatic_mdt4.lhs, output_std3$social_mdt4.lhs, output_std3$thought_mdt4.lhs, output_std3$att_mdt4.lhs, output_std3$agg_mdt4.lhs, output_std3$rulebr_mdt4.lhs, output_std3$anxdep_mdt5.lhs, output_std3$withdep_mdt5.lhs, output_std3$somatic_mdt5.lhs, output_std3$social_mdt5.lhs, output_std3$thought_mdt5.lhs, output_std3$att_mdt5.lhs, output_std3$agg_mdt5.lhs, output_std3$rulebr_mdt5.lhs, output_std3$anxdep_nt.lhs, output_std3$withdep_nt.lhs, output_std3$somatic_nt.lhs, output_std3$social_nt.lhs, output_std3$thought_nt.lhs, output_std3$att_nt.lhs, output_std3$agg_nt.lhs, output_std3$rulebr_nt.lhs)
+
+
+
+cols_rhs <- gsub(".lhs", ".rhs", cols_lhs)
+
+output_table$rhs <- c(output_std3$anxdep_mdt1.rhs, output_std3$withdep_mdt1.rhs, output_std3$somatic_mdt1.rhs, output_std3$social_mdt1.rhs, output_std3$thought_mdt1.rhs, output_std3$att_mdt1.rhs, output_std3$agg_mdt1.rhs, output_std3$rulebr_mdt1.rhs, output_std3$anxdep_mdt2.rhs, output_std3$withdep_mdt2.rhs, output_std3$somatic_mdt2.rhs, output_std3$social_mdt2.rhs, output_std3$thought_mdt2.rhs, output_std3$att_mdt2.rhs, output_std3$agg_mdt2.rhs, output_std3$rulebr_mdt2.rhs, output_std3$anxdep_mdt3.rhs, output_std3$withdep_mdt3.rhs, output_std3$somatic_mdt3.rhs, output_std3$social_mdt3.rhs, output_std3$thought_mdt3.rhs, output_std3$att_mdt3.rhs, output_std3$agg_mdt3.rhs, output_std3$rulebr_mdt3.rhs, output_std3$anxdep_mdt4.rhs, output_std3$withdep_mdt4.rhs, output_std3$somatic_mdt4.rhs, output_std3$social_mdt4.rhs, output_std3$thought_mdt4.rhs, output_std3$att_mdt4.rhs, output_std3$agg_mdt4.rhs, output_std3$rulebr_mdt4.rhs, output_std3$anxdep_mdt5.rhs, output_std3$withdep_mdt5.rhs, output_std3$somatic_mdt5.rhs, output_std3$social_mdt5.rhs, output_std3$thought_mdt5.rhs, output_std3$att_mdt5.rhs, output_std3$agg_mdt5.rhs, output_std3$rulebr_mdt5.rhs, output_std3$anxdep_nt.rhs, output_std3$withdep_nt.rhs, output_std3$somatic_nt.rhs, output_std3$social_nt.rhs, output_std3$thought_nt.rhs, output_std3$att_nt.rhs, output_std3$agg_nt.rhs, output_std3$rulebr_nt.rhs)
+
+output_table$op <- "~"
+
+
+cols_est.std <- gsub(".rhs", ".est.std", cols_rhs)
+
+
+output_table$est.std <- c(output_std3$anxdep_mdt1.est.std, output_std3$withdep_mdt1.est.std, output_std3$somatic_mdt1.est.std, output_std3$social_mdt1.est.std, output_std3$thought_mdt1.est.std, output_std3$att_mdt1.est.std, output_std3$agg_mdt1.est.std, output_std3$rulebr_mdt1.est.std, output_std3$anxdep_mdt2.est.std, output_std3$withdep_mdt2.est.std, output_std3$somatic_mdt2.est.std, output_std3$social_mdt2.est.std, output_std3$thought_mdt2.est.std, output_std3$att_mdt2.est.std, output_std3$agg_mdt2.est.std, output_std3$rulebr_mdt2.est.std, output_std3$anxdep_mdt3.est.std, output_std3$withdep_mdt3.est.std, output_std3$somatic_mdt3.est.std, output_std3$social_mdt3.est.std, output_std3$thought_mdt3.est.std, output_std3$att_mdt3.est.std, output_std3$agg_mdt3.est.std, output_std3$rulebr_mdt3.est.std, output_std3$anxdep_mdt4.est.std, output_std3$withdep_mdt4.est.std, output_std3$somatic_mdt4.est.std, output_std3$social_mdt4.est.std, output_std3$thought_mdt4.est.std, output_std3$att_mdt4.est.std, output_std3$agg_mdt4.est.std, output_std3$rulebr_mdt4.est.std, output_std3$anxdep_mdt5.est.std, output_std3$withdep_mdt5.est.std, output_std3$somatic_mdt5.est.std, output_std3$social_mdt5.est.std, output_std3$thought_mdt5.est.std, output_std3$att_mdt5.est.std, output_std3$agg_mdt5.est.std, output_std3$rulebr_mdt5.est.std, output_std3$anxdep_nt.est.std, output_std3$withdep_nt.est.std, output_std3$somatic_nt.est.std, output_std3$social_nt.est.std, output_std3$thought_nt.est.std, output_std3$att_nt.est.std, output_std3$agg_nt.est.std, output_std3$rulebr_nt.est.std)
+
+
+cols_se <- gsub(".est.std", ".se", cols_est.std)
+
+
+output_table$se <-  c(output_std3$anxdep_mdt1.se, output_std3$withdep_mdt1.se, output_std3$somatic_mdt1.se, output_std3$social_mdt1.se, output_std3$thought_mdt1.se, output_std3$att_mdt1.se, output_std3$agg_mdt1.se, output_std3$rulebr_mdt1.se, output_std3$anxdep_mdt2.se, output_std3$withdep_mdt2.se, output_std3$somatic_mdt2.se, output_std3$social_mdt2.se, output_std3$thought_mdt2.se, output_std3$att_mdt2.se, output_std3$agg_mdt2.se, output_std3$rulebr_mdt2.se, output_std3$anxdep_mdt3.se, output_std3$withdep_mdt3.se, output_std3$somatic_mdt3.se, output_std3$social_mdt3.se, output_std3$thought_mdt3.se, output_std3$att_mdt3.se, output_std3$agg_mdt3.se, output_std3$rulebr_mdt3.se, output_std3$anxdep_mdt4.se, output_std3$withdep_mdt4.se, output_std3$somatic_mdt4.se, output_std3$social_mdt4.se, output_std3$thought_mdt4.se, output_std3$att_mdt4.se, output_std3$agg_mdt4.se, output_std3$rulebr_mdt4.se, output_std3$anxdep_mdt5.se, output_std3$withdep_mdt5.se, output_std3$somatic_mdt5.se, output_std3$social_mdt5.se, output_std3$thought_mdt5.se, output_std3$att_mdt5.se, output_std3$agg_mdt5.se, output_std3$rulebr_mdt5.se, output_std3$anxdep_nt.se, output_std3$withdep_nt.se, output_std3$somatic_nt.se, output_std3$social_nt.se, output_std3$thought_nt.se, output_std3$att_nt.se, output_std3$agg_nt.se, output_std3$rulebr_nt.se)
+
+
+output_table$model <- paste0(output_table$lhs, " ", output_table$op, " ", output_table$rhs)
+
+out <- output_table[ , c(1, 5, 6, 7, 8)] 
+
+
+
+out2 <- out
+rownames(out2) <- out2$model 
+out2$model <- NULL
+
+out2 <- round(out2, digits = 3)
+
+# separate into temporal direction (brain --> beh; beh --> brain)
+
+BrtoBeh <- grep("mdt1_t1|mdt2_t1|mdt3_t1|mdt4_t1|mdt5_t1| nt_t1", rownames(out2), value = T)
+
+out_BrtoBeh <- out2[rownames(out2) %in% BrtoBeh, ]
+out_BehtoBr <- out2[rownames(out2) %notin% BrtoBeh, ]
+
+
+out2 <- rbind(out_BrtoBeh, out_BehtoBr)
+
+
+rownames(out2) <- gsub("mdt1", "MDT state 1", 
+                            gsub("mdt2", "MDT state 2",
+                                 gsub("mdt3", "MDT state 3", 
+                                      gsub("mdt4", "MDT state 4",
+                                           gsub("mdt5", "MDT state 5",
+                                                gsub("nt ", "NT ",           gsub("anxdep", "Anxious/Depressed",
+                                                 gsub("withdep", "Withdrawn/Depressed", 
+                                                      gsub("somatic", "Somatic complaints",
+                                                           gsub("social", "Social problems",
+                                                                gsub("thought", "Thought problems",
+                                                                     gsub("att", "Attention problems",
+                                                                          gsub("agg", "Aggressive behaviors", 
+                                                                               gsub("rulebr", "Rule-breaking behaviors",
+                                                                                    gsub("_t2", " T2", 
+                                                                                         gsub("_t1", " T1",
+                                                                                         rownames(out2)))))))))))))))))
+
+
+
+
+
+
+
+
+write.csv(out2, paste0(tab, "results_syndromes.csv"))
+
+
+```
+
+
